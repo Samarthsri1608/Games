@@ -207,5 +207,56 @@ check("parser accepts --underwater flag", args.underwater is True)
 check("parser accepts aquatic theme", args.theme == "aquatic")
 check("aquatic theme is in THEMES dictionary", "aquatic" in T.THEMES)
 
+print("\n[8] upwelling thermal currents, bubble streams & physics tumble")
+g_up = T.Game(seed=501, underwater=True)
+blank(g_up)
+check("upwelling timers initialized", g_up.next_upwelling > time.monotonic())
+now = time.monotonic()
+g_up.next_upwelling = now - 0.1
+g_up.update(now)
+check("upwelling triggers on schedule", g_up.upwelling_until > now)
+
+# Reverse buoyancy: piece floats upwards gently during upwelling
+g_up.piece = T.Piece("O")
+g_up.piece.x = 4
+g_up.piece.y = 28
+g_up.next_fall = now - 0.1
+g_up.update(now)
+check("active piece floats upwards during upwelling", g_up.piece.y == 27, g_up.piece.y)
+
+# Rising bubble streams during upwelling
+g_up._update_bubbles(now, 0.05)
+check("bubbles spawn during upwelling", len(g_up.bubbles) > 0, len(g_up.bubbles))
+b = g_up.bubbles[0]
+y_before = b["y"]
+g_up._update_bubbles(now, 0.1)
+check("bubbles rise upwards over time", b["y"] < y_before, f"before={y_before}, after={b['y']}")
+
+# Physics-based tumble: loose overhang block tilts/flips into adjacent void
+g_tumble = T.Game(seed=502, underwater=True)
+blank(g_tumble)
+# Place a pillar with an unsupported loose overhang at (4, 35)
+g_tumble.board[36][3] = "I"
+g_tumble.board[35][3] = "I"
+g_tumble.board[35][4] = "O"  # loose overhang block: no support at (4, 36)
+g_tumble.wave_dir = 1       # push rightward
+g_tumble._upwelling_physics_tumble()
+check("loose overhang block tumbled/flipped into lower space",
+      g_tumble.board[35][4] is None or g_tumble.board[36][4] == "O" or g_tumble.board[36][5] == "O")
+
+# Undo restores upwelling state & bubbles
+g_undo_up = T.Game(seed=503, underwater=True)
+blank(g_undo_up)
+g_undo_up.upwelling_until = now + 6.0
+g_undo_up.bubbles = [{"x": 3.0, "y": 30.0, "char": "o", "speed": 6.0}]
+snap = g_undo_up.snapshot()
+check("snapshot captures upwelling state and bubbles",
+      "upwelling_until" in snap and snap["upwelling_until"] > now and len(snap["bubbles"]) == 1)
+g_undo_up.upwelling_until = 0.0
+g_undo_up.bubbles = []
+g_undo_up.restore(snap)
+check("restore recovers upwelling timer and bubbles",
+      g_undo_up.upwelling_until > now and len(g_undo_up.bubbles) == 1)
+
 print("\n" + ("UNDERWATER OK" if not fails else ("%d UNDERWATER FAILS" % len(fails))))
 sys.exit(1 if fails else 0)

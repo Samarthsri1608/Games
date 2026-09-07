@@ -212,8 +212,12 @@ class Game(object):
         self.next_fall = now + gravity_for(self.level)
         self.next_wave = now + self.rng.uniform(1.4, 2.8)
         self.wave_dir = 0
+        self.next_upwelling = now + self.rng.uniform(25.0, 40.0)
+        self.upwelling_until = 0.0
+        self.next_upwelling_tumble = 0.0
         self.next_fish = now + self.rng.uniform(5.0, 10.0)
         self.fishes = []
+        self.bubbles = []
         self.game_over_reason = "topout"
         self.last_update = now
         self.spawn()
@@ -268,6 +272,74 @@ class Game(object):
             self.game_over_reason = "fish_crushed"
             self.say("FISH HARMED!")
             self.game_over()
+
+    def _update_bubbles(self, now, dt):
+        if not self.underwater or self.state != "play":
+            return
+        is_upwelling = now < getattr(self, "upwelling_until", 0.0)
+        # During upwelling, periodically spawn rising bubble stream particles
+        if is_upwelling and self.rng.random() < 0.60:
+            self.bubbles.append({
+                "x": float(self.rng.randint(0, COLS - 1)),
+                "y": float(ROWS - 1),
+                "char": self.rng.choice(["·", "°", "o", "O"]),
+                "speed": self.rng.uniform(5.0, 10.0),
+            })
+        for b in list(self.bubbles):
+            b["y"] -= b["speed"] * dt
+            if b["y"] < HIDDEN_ROWS - 1:
+                self.bubbles.remove(b)
+
+    def _upwelling_physics_tumble(self):
+        """Buoyant water current tilts and flips loose edge blocks and unsupported overhangs."""
+        if not self.underwater or self.state != "play":
+            return
+        
+        loose_blocks = []
+        for y in range(HIDDEN_ROWS, ROWS):
+            for c in range(COLS):
+                kind = self.board[y][c]
+                if kind is None:
+                    continue
+                left_loose = (c > 0 and self.board[y][c - 1] is None and 
+                              (y == ROWS - 1 or self.board[y + 1][c - 1] is None))
+                right_loose = (c < COLS - 1 and self.board[y][c + 1] is None and 
+                               (y == ROWS - 1 or self.board[y + 1][c + 1] is None))
+                unsupported = (y < ROWS - 1 and self.board[y + 1][c] is None)
+
+                if (left_loose or right_loose or unsupported) and (y < ROWS - 1 or left_loose or right_loose):
+                    loose_blocks.append((c, y, kind, left_loose, right_loose, unsupported))
+
+        if not loose_blocks:
+            return
+
+        self.rng.shuffle(loose_blocks)
+        tumbled = 0
+        for c, y, kind, left_loose, right_loose, unsupported in loose_blocks:
+            if tumbled >= 2:
+                break
+            preferred_dir = self.wave_dir if self.wave_dir != 0 else self.rng.choice((-1, 1))
+            target_c = None
+            if preferred_dir == -1 and left_loose:
+                target_c = c - 1
+            elif preferred_dir == 1 and right_loose:
+                target_c = c + 1
+            elif left_loose:
+                target_c = c - 1
+            elif right_loose:
+                target_c = c + 1
+            elif unsupported:
+                if c > 0 and self.board[y][c - 1] is None:
+                    target_c = c - 1
+                elif c < COLS - 1 and self.board[y][c + 1] is None:
+                    target_c = c + 1
+
+            if target_c is not None:
+                target_y = y + 1 if (y < ROWS - 1 and self.board[y + 1][target_c] is None) else y
+                if self.board[target_y][target_c] is None:
+                    self.board[y][c] = None
+                    self.board[target_y][target_c] = kind
+                    tumbled += 1
 
     def _refill(self):
         while len(self.queue) < NEXT_COUNT + 1:
@@ -345,8 +417,12 @@ class Game(object):
             "underwater": self.underwater,
             "next_wave": self.next_wave,
             "wave_dir": self.wave_dir,
+            "next_upwelling": self.next_upwelling,
+            "upwelling_until": self.upwelling_until,
+            "next_upwelling_tumble": self.next_upwelling_tumble,
             "next_fish": self.next_fish,
             "fishes": [dict(f) for f in self.fishes],
+            "bubbles": [dict(b) for b in self.bubbles],
             "game_over_reason": getattr(self, "game_over_reason", "topout"),
             "rng": self.rng.getstate(),
         }
@@ -367,8 +443,12 @@ class Game(object):
         self.underwater = snap.get("underwater", self.underwater)
         self.next_wave = snap.get("next_wave", time.monotonic() + 2.0)
         self.wave_dir = snap.get("wave_dir", 0)
+        self.next_upwelling = snap.get("next_upwelling", time.monotonic() + 30.0)
+        self.upwelling_until = snap.get("upwelling_until", 0.0)
+        self.next_upwelling_tumble = snap.get("next_upwelling_tumble", 0.0)
         self.next_fish = snap.get("next_fish", time.monotonic() + 5.0)
         self.fishes = [dict(f) for f in snap.get("fishes", [])]
+        self.bubbles = [dict(b) for b in snap.get("bubbles", [])]
         self.game_over_reason = snap.get("game_over_reason", "topout")
         self.rng.setstate(snap["rng"])
         self.piece = Piece(snap["kind"]) if snap["kind"] else None
@@ -758,6 +838,19 @@ class Game(object):
             dt = max(0.0, min(0.1, now - getattr(self, "last_update", now)))
             self.last_update = now
             self._update_fishes(now, dt)
+            self._update_bubbles(now, dt)
+            if self.state == "play":
+                if now >= self.next_upwelling and now >= self.upwelling_until:
+                    self.upwelling_until = now + self.rng.uniform(6.0, 8.0)
+                    self.next_upwelling = self.upwelling_until + self.rng.uniform(30.0, 45.0)
+                    self.next_upwelling_tumble = now + 1.2
+                    self.say("UPWELLING!")
+                    self.sounds.append("level")
+                if now < self.upwelling_until:
+                    if now >= self.next_upwelling_tumble:
+                        self.next_upwelling_tumble = now + 1.8
+                        self._upwelling_physics_tumble()
+
             if self.state == "play" and self.piece is not None and now >= self.next_wave:
                 self.wave_dir = self.rng.choice((-1, 1))
                 self.next_wave = now + max(1.2, 2.8 - (self.level - 1) * 0.08)
@@ -767,14 +860,26 @@ class Game(object):
             return
 
         interval = self.gravity()
+        is_upwelling = self.underwater and (now < getattr(self, "upwelling_until", 0.0))
         guard = 0
-        while now >= self.next_fall and guard < ROWS:
-            guard += 1
-            if self.move(0, 1):
-                self.next_fall += interval
-            else:
-                self.next_fall = now + interval
-                break
+        if is_upwelling:
+            float_interval = interval * 1.8
+            while now >= self.next_fall and guard < ROWS:
+                guard += 1
+                if self.piece.y > HIDDEN_ROWS and not self.collides(self.piece.cells(y=self.piece.y - 1)):
+                    self.move(0, -1)
+                    self.next_fall += float_interval
+                else:
+                    self.next_fall = now + float_interval
+                    break
+        else:
+            while now >= self.next_fall and guard < ROWS:
+                guard += 1
+                if self.move(0, 1):
+                    self.next_fall += interval
+                else:
+                    self.next_fall = now + interval
+                    break
 
         if self.grounded():
             if self.lock_start is None:
@@ -1135,6 +1240,16 @@ class Screen(object):
         for i in range(L.ch):
             self.put(y + i, x, line if i == 0 else " " * L.cw, a)
 
+    def bubble_cell(self, r, c, char="o", color_name="accent"):
+        L = self.L
+        y = 1 + 1 + r * L.ch
+        x = L.pf_x + 1 + c * L.cw
+        pad_left = max(0, (L.cw - len(char)) // 2)
+        line = " " * pad_left + char + " " * max(0, L.cw - len(char) - pad_left)
+        a = attr(color_name, curses.A_BOLD)
+        for i in range(L.ch):
+            self.put(y + i, x, line if i == 0 else " " * L.cw, a)
+
     def frame(self, y, x, w, h, title="", a=None):
         g = self.g
         a = attr("frame", 0) if a is None else a
@@ -1239,6 +1354,14 @@ def draw(scr, game):
                 sprite = f["sprite_r"] if f["dir"] > 0 else f["sprite_l"]
                 fish_cells[(fx, fy)] = (sprite, f["color"])
 
+    bubble_cells = {}
+    if game.underwater and getattr(game, "bubbles", None):
+        for b in game.bubbles:
+            bx = int(round(b["x"]))
+            by = int(round(b["y"]))
+            if 0 <= bx < COLS and HIDDEN_ROWS <= by < ROWS:
+                bubble_cells[(bx, by)] = b["char"]
+
     for r in range(VISIBLE_ROWS):
         by = HIDDEN_ROWS + r
         for c in range(COLS):
@@ -1260,6 +1383,8 @@ def draw(scr, game):
             if (c, by) in fish_cells and (c, by) not in live and (c, by) not in ghosted and k is None:
                 sprite, color = fish_cells[(c, by)]
                 scr.fish_cell(r, c, sprite, color)
+            elif (c, by) in bubble_cells and (c, by) not in live and (c, by) not in ghosted and k is None:
+                scr.bubble_cell(r, c, bubble_cells[(c, by)], "accent")
             elif k is not None:
                 scr.field_cell(r, c, k)
             elif (c, by) in live:
@@ -1294,8 +1419,11 @@ def draw(scr, game):
                 attr("accent", curses.A_BOLD) if game.undos_left
                 else attr("grid", curses.A_DIM))
     if game.underwater:
-        cdir = "<<" if game.wave_dir < 0 else (">>" if game.wave_dir > 0 else " ~")
-        scr.put(y + 12, 0, "WAVE   %4s" % cdir, attr("accent", curses.A_BOLD))
+        if now < getattr(game, "upwelling_until", 0.0):
+            scr.put(y + 12, 0, "SURGE    ^^", attr("accent", curses.A_BOLD))
+        else:
+            cdir = "<<" if game.wave_dir < 0 else (">>" if game.wave_dir > 0 else " ~")
+            scr.put(y + 12, 0, "WAVE   %4s" % cdir, attr("accent", curses.A_BOLD))
     scr.put(y + 14, 0, "PIECES%4d" % game.pieces_placed, lab)
     scr.put(y + 15, 0, "TETRIS%4d" % game.tally["tetris"], lab)
     if game.message and now < game.message_until:
@@ -1408,7 +1536,7 @@ def draw_help(scr):
              "Hold a direction to slide the piece along.",
              "Line clears score 100/300/500/800 x level;",
              "T-spins, back-to-back and combos score more.",
-             "Underwater mode: waves sway pieces; protect the fish!"]
+             "Underwater mode: waves sway blocks, upwelling lifts them; protect fish!"]
     bw = min(L.w - 2, 54)
     bx = (L.w - bw) // 2
     scr.frame(2, bx, bw, len(keys) + len(notes) + 3)
