@@ -51,6 +51,7 @@ check("wave does not push piece through right wall", g3.piece.x + 2 <= T.COLS, g
 print("\n[2] hard drop hydrodynamic plunge wobble")
 # Test drop in open water with wobble
 wobbled = False
+max_wobble_observed = 0
 for s in range(50):
     g = T.Game(seed=s, underwater=True)
     blank(g)
@@ -59,10 +60,35 @@ for s in range(50):
     orig_x = g.piece.x
     g.hard_drop()
     # In underwater mode, a 19-row drop through open water should experience lateral wobble on some seeds
-    if g.fx_lock_cells and any(x != orig_x for x, y in g.fx_lock_cells):
-        wobbled = True
-        break
+    if g.fx_lock_cells:
+        locked_x = min(x for x, y in g.fx_lock_cells)
+        shift = abs(locked_x - orig_x)
+        max_wobble_observed = max(max_wobble_observed, shift)
+        if shift > 0:
+            wobbled = True
 check("hard drop plunges with hydrodynamic wobble in open water", wobbled)
+check("hard drop wobbles by at most 1 block laterally", max_wobble_observed == 1, f"max_wobble={max_wobble_observed}")
+
+# Test wobble in specific water flow directions
+g_flow_r = T.Game(seed=1, underwater=True)
+blank(g_flow_r)
+g_flow_r.wave_dir = 1
+g_flow_r.piece = T.Piece("O")
+g_flow_r.piece.x = 4; g_flow_r.piece.y = 20
+g_flow_r.rng.random = lambda: 0.1  # ensure wobble triggers
+g_flow_r.hard_drop()
+locked_x_r = min(x for x, y in g_flow_r.fx_lock_cells)
+check("wobble follows rightward water flow by 1 block", locked_x_r == 5, locked_x_r)
+
+g_flow_l = T.Game(seed=1, underwater=True)
+blank(g_flow_l)
+g_flow_l.wave_dir = -1
+g_flow_l.piece = T.Piece("O")
+g_flow_l.piece.x = 4; g_flow_l.piece.y = 20
+g_flow_l.rng.random = lambda: 0.1  # ensure wobble triggers
+g_flow_l.hard_drop()
+locked_x_l = min(x for x, y in g_flow_l.fx_lock_cells)
+check("wobble follows leftward water flow by 1 block", locked_x_l == 3, locked_x_l)
 
 # Test drop in narrow channel (must never get stuck)
 g_chan = T.Game(seed=10, underwater=True)

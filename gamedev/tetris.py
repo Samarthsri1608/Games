@@ -509,6 +509,7 @@ class Game(object):
         if self.piece is None or self.state != "play":
             return
         dist = 0
+        wobbled = False
         while True:
             if not self.move(0, 1):
                 break
@@ -516,11 +517,12 @@ class Game(object):
             if self.underwater:
                 if self.state == "over":
                     return
-                # Hydrodynamic plunge wobble every 2 rows
-                if dist % 2 == 0 and self.rng.random() < 0.60:
+                # Hydrodynamic plunge wobble: at most 1 block in direction of water flow
+                if not wobbled and self.rng.random() < 0.60:
                     wobble_dir = self.wave_dir if self.wave_dir != 0 else self.rng.choice((-1, 1))
                     if not self.collides(self.piece.cells(x=self.piece.x + wobble_dir, y=self.piece.y)):
                         self.piece.x += wobble_dir
+                        wobbled = True
                         if self._check_fish_collision():
                             self.game_over_reason = "fish_crushed"
                             self.say("FISH HARMED!")
